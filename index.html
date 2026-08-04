@@ -366,6 +366,19 @@ document.getElementById('actBtns').onclick=e=>{
 document.getElementById('dayNotes').oninput=e=>{day().notes=e.target.value;save();};
 window.delMeal=id=>{const d=day();d.meals=d.meals.filter(m=>m.id!==id);save();render();};
 
+// Tolerant parse: handles fenced JSON and salvages numbers from a truncated response.
+function parseLoose(txt){
+  const clean=txt.replace(/```json|```/g,'').trim();
+  try{ return JSON.parse(clean); }catch(e){}
+  const num=k=>{ const m=clean.match(new RegExp('"'+k+'"\\s*:\\s*(-?[\\d.]+)')); return m?+m[1]:0; };
+  const str=k=>{ const m=clean.match(new RegExp('"'+k+'"\\s*:\\s*"([^"]*)')); return m?m[1]:''; };
+  const out={calories:num('calories'),protein:num('protein'),carbs:num('carbs'),fat:num('fat'),
+             fiber:num('fiber'),sugar:num('sugar'),sodium:num('sodium'),
+             assessment:str('assessment'),score:num('score')||null};
+  if(!out.calories && !out.protein) throw new Error('Could not read the estimate');
+  return out;
+}
+
 /* ---- AI (Gemini or Groq, optional) ---- */
 const GEM_DEFAULT='gemini-3.6-flash';
 
@@ -374,7 +387,7 @@ async function gemCall(model,key,prompt,json){
     method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({
       contents:[{parts:[{text:prompt}]}],
-      generationConfig:{maxOutputTokens:800, ...(json?{responseMimeType:'application/json'}:{})}
+      generationConfig:{maxOutputTokens:2048, ...(json?{responseMimeType:'application/json'}:{})}
     })
   });
 }
@@ -443,11 +456,12 @@ async function estimate(){
   const btn=document.getElementById('addBtn'); btn.disabled=true; btn.innerHTML='<span class="spin"></span>';
   const p=S.profile;
   const prompt=`Estimate nutrition for: "${txt}". Person: 18yo male, ${p.weight}lb, goal ${p.goal}, no pork.
-Lean slightly high on portion size when unclear. Reply ONLY with JSON:
-{"calories":n,"protein":n,"carbs":n,"fat":n,"fiber":n,"sugar":n,"sodium":n,"assessment":"2-3 plain sentences on balance, benefits, concerns","score":n}`;
+Lean slightly high on portion size when unclear. Keep "assessment" to 2 short sentences maximum.
+Reply ONLY with JSON:
+{"calories":n,"protein":n,"carbs":n,"fat":n,"fiber":n,"sugar":n,"sodium":n,"assessment":"...","score":n}`;
   try{
     const out=await ai(prompt,true);
-    showPending({...JSON.parse(out.replace(/```json|```/g,'').trim()),description:txt});
+    showPending({...parseLoose(out),description:txt});
   }catch(e){
     if(e.message==='nokey') err.innerHTML='<div class="err">No API key set — enter the numbers yourself below, or add a key in settings (⚙) for automatic estimates.</div>';
     else err.innerHTML='<div class="err">Estimate failed ('+esc(e.message)+'). Enter the numbers manually below.</div>';
@@ -507,7 +521,13 @@ document.getElementById('finishBtn').onclick=async()=>{
 Meals: ${d.meals.map(m=>m.description).join('; ')||'none'}. Goal: ${S.profile.goal}.
 Reply ONLY JSON: {"score":n,"strengths":["..",".."],"improvements":["..",".."],"tomorrow":["..",".."]}
 score is 1-10. Keep each bullet under 15 words.`;
-  try{ d.summary=JSON.parse((await ai(prompt,true)).replace(/```json|```/g,'').trim()); }
+  try{
+    const raw=await ai(prompt,true);
+    let s; try{ s=JSON.parse(raw.replace(/```json|```/g,'').trim()); }
+    catch{ s=null; }
+    if(!s) throw new Error('bad json');
+    d.summary=s;
+  }
   catch(e){
     const gap=d.targets.calories-totals.calories, pg=d.targets.protein-totals.protein;
     d.summary={score:null,strengths:[],improvements:[
