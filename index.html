@@ -92,7 +92,7 @@ label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em
   <div class="row">
     <div>
       <div class="brand"><span>IRON</span> LEDGER</div>
-      <div class="sub">Daily Nutrition Log</div>
+      <div class="sub">Daily Nutrition Log · <span id="build"></span></div>
     </div>
     <div class="row" style="gap:8px">
       <span class="saved" id="saveTag"></span>
@@ -190,6 +190,7 @@ label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em
 <script>
 /* ------------------------------------------------------------------ state */
 const KEY='ironLedger.v1';
+const BUILD='v5 · 4 Aug';
 const ACTS=[
  {k:'lift', l:'Lifting', i:'🏋', f:1.55, s:350},
  {k:'sport',l:'Sport',   i:'🏀', f:1.65, s:250},
@@ -382,13 +383,14 @@ function parseLoose(txt){
 /* ---- AI (Gemini or Groq, optional) ---- */
 const GEM_DEFAULT='gemini-3.6-flash';
 
-async function gemCall(model,key,prompt,json){
+async function gemCall(model,key,prompt,json,noThinkCfg){
+  const cfg={maxOutputTokens:2048, ...(json?{responseMimeType:'application/json'}:{})};
+  // Gemini 3.x spends output budget on internal reasoning first; keep it minimal
+  // so the budget goes to the actual answer.
+  if(!noThinkCfg) cfg.thinkingConfig={thinkingLevel:'low'};
   return fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key),{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({
-      contents:[{parts:[{text:prompt}]}],
-      generationConfig:{maxOutputTokens:2048, ...(json?{responseMimeType:'application/json'}:{})}
-    })
+    body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:cfg})
   });
 }
 
@@ -416,6 +418,13 @@ async function ai(prompt,json){
     let model=S.profile.gemModel||GEM_DEFAULT;
     let r=await gemCall(model,k,prompt,json);
 
+    // Some models reject thinkingConfig — retry once without it.
+    if(r.status===400){
+      const c=r.clone(); let msg='';
+      try{ msg=(await c.json()).error?.message||''; }catch{}
+      if(/thinking/i.test(msg)) r=await gemCall(model,k,prompt,json,true);
+    }
+
     // Model retired or renamed? Discover a current one and retry once.
     if(r.status===404||r.status===400){
       try{
@@ -431,8 +440,14 @@ async function ai(prompt,json){
       throw new Error('Gemini '+r.status+(d?': '+d.slice(0,110):''));
     }
     const j=await r.json();
-    const t=j.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('');
-    if(!t) throw new Error('Gemini returned no text');
+    const cand=j.candidates?.[0];
+    const t=cand?.content?.parts?.map(p=>p.text||'').join('')||'';
+    if(!t){
+      const fr=cand?.finishReason||'unknown';
+      throw new Error(fr==='MAX_TOKENS'
+        ? 'Gemini used its whole budget thinking and returned nothing. Try a shorter meal description.'
+        : 'Gemini returned no text (finish reason: '+fr+')');
+    }
     return t;
   }
 
@@ -592,6 +607,7 @@ document.getElementById('impBtn').onclick=()=>{
   try{ S=JSON.parse(t); save(); render(); alert('Restored.'); }catch{ alert('That was not valid backup data.'); }
 };
 
+document.getElementById('build').textContent=BUILD;
 render();
 </script>
 </body>
