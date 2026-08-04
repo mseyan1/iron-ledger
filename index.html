@@ -138,6 +138,9 @@ label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em
       <p class="muted" style="margin-top:5px">Free at console.groq.com — no card, ~1,000 requests/day.</p>
     </div>
 
+    <button class="btn" id="testBtn" style="margin-top:11px">Test connection</button>
+    <div id="testOut" class="note"></div>
+
     <h2 style="margin-top:18px">Backup</h2>
     <div class="grid2">
       <button class="btn" id="expBtn">Copy backup</button>
@@ -364,23 +367,55 @@ document.getElementById('dayNotes').oninput=e=>{day().notes=e.target.value;save(
 window.delMeal=id=>{const d=day();d.meals=d.meals.filter(m=>m.id!==id);save();render();};
 
 /* ---- AI (Gemini or Groq, optional) ---- */
+const GEM_DEFAULT='gemini-3.6-flash';
+
+async function gemCall(model,key,prompt,json){
+  return fetch('https://generativelanguage.googleapis.com/v1beta/models/'+model+':generateContent?key='+encodeURIComponent(key),{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      contents:[{parts:[{text:prompt}]}],
+      generationConfig:{maxOutputTokens:800, ...(json?{responseMimeType:'application/json'}:{})}
+    })
+  });
+}
+
+// Ask Google which models this key can actually use, and cache the pick.
+async function findGemModel(key){
+  const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models?key='+encodeURIComponent(key));
+  if(!r.ok) throw new Error('Could not list Gemini models ('+r.status+')');
+  const list=(await r.json()).models||[];
+  const usable=list.filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
+                   .map(m=>m.name.replace(/^models\//,''));
+  // prefer a stable (non-preview/exp) flash model, newest first
+  const flash=usable.filter(n=>/flash/i.test(n) && !/preview|exp|thinking|image|tts|audio|lite/i.test(n))
+                    .sort().reverse();
+  const pick=flash[0]||usable.filter(n=>/flash/i.test(n)).sort().reverse()[0]||usable[0];
+  if(!pick) throw new Error('No usable Gemini models for this key');
+  return pick;
+}
+
 async function ai(prompt,json){
   const prov=S.profile.provider||'gemini';
   const k=(prov==='gemini'?S.profile.geminiKey:S.profile.groqKey)||'';
   if(!k) throw new Error('nokey');
 
   if(prov==='gemini'){
-    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+encodeURIComponent(k),{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        contents:[{parts:[{text:prompt}]}],
-        generationConfig:{temperature:.3,maxOutputTokens:800,
-          ...(json?{responseMimeType:'application/json'}:{})}
-      })
-    });
+    let model=S.profile.gemModel||GEM_DEFAULT;
+    let r=await gemCall(model,k,prompt,json);
+
+    // Model retired or renamed? Discover a current one and retry once.
+    if(r.status===404||r.status===400){
+      try{
+        const found=await findGemModel(k);
+        if(found!==model){
+          model=found; S.profile.gemModel=found; save();
+          r=await gemCall(model,k,prompt,json);
+        }
+      }catch(e){ /* fall through to the error below */ }
+    }
     if(!r.ok){
       let d=''; try{ d=(await r.json()).error?.message||''; }catch{}
-      throw new Error('Gemini '+r.status+(d?': '+d.slice(0,90):''));
+      throw new Error('Gemini '+r.status+(d?': '+d.slice(0,110):''));
     }
     const j=await r.json();
     const t=j.candidates?.[0]?.content?.parts?.map(p=>p.text||'').join('');
@@ -513,6 +548,20 @@ document.getElementById('pProv').onchange=e=>{
     save();
   };
 });
+document.getElementById('testBtn').onclick=async()=>{
+  const o=document.getElementById('testOut');
+  o.innerHTML='<span class="spin"></span>';
+  try{
+    const t=await ai('Reply with exactly: ok',false);
+    o.style.color='var(--sage)';
+    o.textContent='Working. Using '+(S.profile.provider==='gemini'
+      ? (S.profile.gemModel||GEM_DEFAULT) : 'llama-3.1-8b-instant')+'.';
+  }catch(e){
+    o.style.color='var(--rust)';
+    o.textContent = e.message==='nokey' ? 'No key entered for the selected provider.' : e.message;
+  }
+};
+
 document.getElementById('expBtn').onclick=async()=>{
   const j=JSON.stringify(S);
   try{ await navigator.clipboard.writeText(j); alert('Backup copied. Paste it somewhere safe.'); }
