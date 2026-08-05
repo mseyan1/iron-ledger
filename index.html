@@ -161,8 +161,10 @@ label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em
 
   <!-- TARGETS -->
   <div class="card hidden" id="targets">
-    <div class="row"><h2 style="margin:0">Today's targets</h2><span class="pill" id="actPill"></span></div>
+    <div class="row"><h2 style="margin:0">Today's targets</h2>
+      <button class="pill" id="actPill" onclick="changeActivity()" style="border:1px solid var(--border);cursor:pointer"></button></div>
     <p class="muted" id="why" style="margin-top:8px"></p>
+    <div style="margin-top:10px"><label>Date</label><input type="date" id="dayDate"></div>
     <div class="gauges" id="gauges"></div>
     <div id="bars" style="margin-top:14px"></div>
   </div>
@@ -190,7 +192,7 @@ label{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.08em
 <script>
 /* ------------------------------------------------------------------ state */
 const KEY='ironLedger.v1';
-const BUILD='v5 · 4 Aug';
+const BUILD='v6 · 4 Aug';
 const ACTS=[
  {k:'lift', l:'Lifting', i:'🏋', f:1.55, s:350},
  {k:'sport',l:'Sport',   i:'🏀', f:1.65, s:250},
@@ -296,7 +298,10 @@ function render(){
   }
   drawMeals(); drawSummary();
   document.getElementById('dayNotes').value=d.notes||'';
+  const dd=document.getElementById('dayDate');
+  if(dd) dd.value=d.date||'';
 }
+document.getElementById('dayDate').onchange=e=>{day().date=e.target.value;save();};
 const show=(id,on)=>document.getElementById(id).classList.toggle('hidden',!on);
 
 function drawGauges(t){
@@ -333,7 +338,10 @@ function drawMeals(){
     <div class="meal"><div>
       <div class="d">${esc(m.description)}</div>
       <div class="m">${Math.round(m.calories)} cal · ${Math.round(m.protein)}p · ${Math.round(m.carbs)}c · ${Math.round(m.fat)}f${m.t?' · '+m.t:''}</div>
-    </div><button class="x" onclick="delMeal(${m.id})">×</button></div>`).join('');
+    </div><div style="display:flex;gap:2px;flex:0 0 auto">
+      <button class="x" onclick="editMeal(${m.id})" title="Edit">✎</button>
+      <button class="x" onclick="delMeal(${m.id})" title="Remove">×</button>
+    </div></div>`).join('');
 }
 function drawSummary(){
   const d=day(), c=document.getElementById('sumCard');
@@ -347,7 +355,8 @@ function drawSummary(){
       ${Math.round(tot('carbs'))}g carbs &nbsp;·&nbsp; ${Math.round(tot('fat'))}g fat</div>
     ${s.strengths?.length?`<div class="sum-h" style="color:var(--sage)">Strengths</div>${list(s.strengths)}`:''}
     ${s.improvements?.length?`<div class="sum-h" style="color:var(--rust)">Improve</div>${list(s.improvements)}`:''}
-    ${s.tomorrow?.length?`<div class="sum-h" style="color:var(--brass)">Tomorrow</div>${list(s.tomorrow)}`:''}`;
+    ${s.tomorrow?.length?`<div class="sum-h" style="color:var(--brass)">Tomorrow</div>${list(s.tomorrow)}`:''}
+    <button class="btn" style="margin-top:13px" onclick="reopenDay()">Reopen this day to edit</button>`;
 }
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -366,6 +375,14 @@ document.getElementById('actBtns').onclick=e=>{
 };
 document.getElementById('dayNotes').oninput=e=>{day().notes=e.target.value;save();};
 window.delMeal=id=>{const d=day();d.meals=d.meals.filter(m=>m.id!==id);save();render();};
+
+window.reopenDay=()=>{
+  const d=day(); d.done=false; save(); render();
+};
+
+window.changeActivity=()=>{
+  const d=day(); d.act=null; d.targets=null; save(); render();
+};
 
 // Tolerant parse: handles fenced JSON and salvages numbers from a truncated response.
 function parseLoose(txt){
@@ -485,10 +502,11 @@ Reply ONLY with JSON:
   btn.disabled=false; btn.textContent='Add';
 }
 
-function showPending(m){
+function showPending(m,editId){
   const f=['calories','protein','carbs','fat','fiber','sugar','sodium'];
   document.getElementById('pending').innerHTML=`<div class="pending">
-    <div style="font-size:13px;margin-bottom:9px">${esc(m.description)}</div>
+    ${editId?`<label>Description</label><input id="f_desc" value="${esc(m.description)}" style="margin-bottom:9px">`
+            :`<div style="font-size:13px;margin-bottom:9px">${esc(m.description)}</div>`}
     <div class="grid4">${f.slice(0,4).map(k=>`<div><label>${k.slice(0,4)}</label>
       <input type="number" id="f_${k}" value="${m[k]||0}"></div>`).join('')}</div>
     <div class="grid4" style="margin-top:7px">${f.slice(4).map(k=>`<div><label>${k.slice(0,4)}</label>
@@ -496,16 +514,32 @@ function showPending(m){
     ${m.assessment?`<div class="note">${esc(m.assessment)}</div>`:''}
     ${m.score!=null?`<div style="font-size:11px;color:var(--brass);margin-top:7px">Meal score: ${m.score}/10</div>`:''}
     <div class="grid2" style="margin-top:11px">
-      <button class="btn solid" onclick="confirmMeal()">Add to log</button>
+      <button class="btn solid" onclick="confirmMeal(${editId||0})">${editId?'Save changes':'Add to log'}</button>
       <button class="btn ghost" onclick="document.getElementById('pending').innerHTML=''">Cancel</button>
     </div></div>`;
   window._pend=m;
+  if(editId) document.getElementById('pending').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
-window.confirmMeal=()=>{
-  const m={...window._pend,id:Date.now(),
-    t:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
-  ['calories','protein','carbs','fat','fiber','sugar','sodium'].forEach(k=>m[k]=+document.getElementById('f_'+k).value||0);
-  day().meals.push(m);
+
+window.editMeal=id=>{
+  const m=day().meals.find(x=>x.id===id); if(!m)return;
+  showPending({...m},id);
+};
+
+window.confirmMeal=(editId)=>{
+  const fields=['calories','protein','carbs','fat','fiber','sugar','sodium'];
+  const d=day();
+  if(editId){
+    const m=d.meals.find(x=>x.id===editId); if(!m)return;
+    fields.forEach(k=>m[k]=+document.getElementById('f_'+k).value||0);
+    const de=document.getElementById('f_desc');
+    if(de && de.value.trim()) m.description=de.value.trim();
+  }else{
+    const m={...window._pend,id:Date.now(),
+      t:new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})};
+    fields.forEach(k=>m[k]=+document.getElementById('f_'+k).value||0);
+    d.meals.push(m);
+  }
   document.getElementById('pending').innerHTML='';
   document.getElementById('mealIn').value='';
   document.getElementById('mealErr').innerHTML='';
